@@ -14,7 +14,156 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      agent_spans: {
+        Row: {
+          attributes: Json
+          completion_tokens: number
+          cost_usd: number
+          created_at: string
+          duration_ms: number
+          error: string | null
+          events: Json
+          id: string
+          kind: string
+          model: string | null
+          name: string
+          parent_span_id: string | null
+          prompt_tokens: number
+          span_id: string
+          start_offset_ms: number
+          status: string
+          trace_id: string
+        }
+        Insert: {
+          attributes?: Json
+          completion_tokens?: number
+          cost_usd?: number
+          created_at?: string
+          duration_ms?: number
+          error?: string | null
+          events?: Json
+          id?: string
+          kind: string
+          model?: string | null
+          name: string
+          parent_span_id?: string | null
+          prompt_tokens?: number
+          span_id: string
+          start_offset_ms?: number
+          status?: string
+          trace_id: string
+        }
+        Update: {
+          attributes?: Json
+          completion_tokens?: number
+          cost_usd?: number
+          created_at?: string
+          duration_ms?: number
+          error?: string | null
+          events?: Json
+          id?: string
+          kind?: string
+          model?: string | null
+          name?: string
+          parent_span_id?: string | null
+          prompt_tokens?: number
+          span_id?: string
+          start_offset_ms?: number
+          status?: string
+          trace_id?: string
+        }
+        Relationships: []
+      }
+      agent_traces: {
+        Row: {
+          chaos: Json
+          completion_tokens: number
+          confidence: number
+          cost_usd: number
+          created_at: string
+          diagnosis: Json | null
+          duration_ms: number
+          ended_at: string | null
+          error_count: number
+          experiment_id: string | null
+          fallbacks: number
+          id: string
+          model_calls: number
+          optimizations: Json
+          prompt_tokens: number
+          retries: number
+          started_at: string
+          status: string
+          success: boolean
+          summary: Json
+          task_score: number
+          tool_calls: number
+          tool_failures: number
+          topic: string
+          total_tokens: number
+          trace_id: string
+          variant: string
+        }
+        Insert: {
+          chaos?: Json
+          completion_tokens?: number
+          confidence?: number
+          cost_usd?: number
+          created_at?: string
+          diagnosis?: Json | null
+          duration_ms?: number
+          ended_at?: string | null
+          error_count?: number
+          experiment_id?: string | null
+          fallbacks?: number
+          id?: string
+          model_calls?: number
+          optimizations?: Json
+          prompt_tokens?: number
+          retries?: number
+          started_at?: string
+          status?: string
+          success?: boolean
+          summary?: Json
+          task_score?: number
+          tool_calls?: number
+          tool_failures?: number
+          topic: string
+          total_tokens?: number
+          trace_id: string
+          variant?: string
+        }
+        Update: {
+          chaos?: Json
+          completion_tokens?: number
+          confidence?: number
+          cost_usd?: number
+          created_at?: string
+          diagnosis?: Json | null
+          duration_ms?: number
+          ended_at?: string | null
+          error_count?: number
+          experiment_id?: string | null
+          fallbacks?: number
+          id?: string
+          model_calls?: number
+          optimizations?: Json
+          prompt_tokens?: number
+          retries?: number
+          started_at?: string
+          status?: string
+          success?: boolean
+          summary?: Json
+          task_score?: number
+          tool_calls?: number
+          tool_failures?: number
+          topic?: string
+          total_tokens?: number
+          trace_id?: string
+          variant?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
