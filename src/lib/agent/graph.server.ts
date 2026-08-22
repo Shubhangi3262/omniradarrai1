@@ -275,7 +275,6 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         budget,
         trace: log,
         parentSpanId: parent,
-        parentSpanId: parent,
         json: true,
         system:
           'You are the ADJUDICATOR. Find claims where the evidence conflicts, weigh them by plausibility and stated confidence, and resolve each. Return JSON {"conflicts":[{"claim":string,"sides":[string],"resolution":string,"confidence":number}]}. If nothing conflicts return an empty array. Never resolve by averaging: pick the better-supported side and say why.',
@@ -317,7 +316,6 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         node: "verifier",
         budget,
         trace: log,
-        parentSpanId: parent,
         parentSpanId: parent,
         json: true,
         system:
@@ -466,7 +464,6 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         node: "synthesize",
         budget,
         trace: log,
-        parentSpanId: parent,
         parentSpanId: parent,
         json: true,
         system:
