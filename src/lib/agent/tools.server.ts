@@ -37,7 +37,16 @@ export type ToolContext = {
   budget: Budget;
   trace: (e: Omit<TraceEvent, "t">) => void;
   chaosFailureRate: number;
+  parentSpanId?: string | null;
 };
+
+/** Cross-run memoisation of lane retrievals (enabled by the auto-diagnoser). */
+const toolCache = new Map<string, ToolResult>();
+export const cacheKey = (ctx: ToolContext) =>
+  `${ctx.agent}|${ctx.topic}|${ctx.objective}`.toLowerCase().slice(0, 220);
+export function clearToolCache() {
+  toolCache.clear();
+}
 
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
 
@@ -59,6 +68,7 @@ async function liveSweep(ctx: ToolContext): Promise<ToolFinding[]> {
     node: `tool:live/${ctx.agent}`,
     budget: ctx.budget,
     trace: ctx.trace,
+    parentSpanId: ctx.parentSpanId ?? null,
     chaosFailureRate: ctx.chaosFailureRate,
     json: true,
     system: `You are the ${ctx.agent.toUpperCase()} retrieval tool of a multi-agent intelligence system. Report only findings you can justify. Never invent URLs; source_hint names where to verify. Give an honest confidence 0-1 and lower it when unsure. Return JSON {"findings":[{"title":string,"insight":string,"impact":"high|medium|low","source_hint":string,"confidence":number}]} with 2-3 findings.`,
@@ -81,6 +91,7 @@ async function degradedSweep(ctx: ToolContext): Promise<ToolFinding[]> {
     node: `tool:degraded/${ctx.agent}`,
     budget: ctx.budget,
     trace: ctx.trace,
+    parentSpanId: ctx.parentSpanId ?? null,
     // the backup tool is deliberately not chaos-injected as often
     chaosFailureRate: ctx.chaosFailureRate * 0.4,
     json: true,
@@ -113,8 +124,45 @@ function archiveRecall(ctx: ToolContext): ToolFinding[] {
 }
 
 export async function runRetrievalTool(ctx: ToolContext): Promise<ToolResult> {
+  const tracer = ctx.budget.tracer;
+  const cfg = ctx.budget.opt;
+
+  // --- cache lookup (optimisation applied by the auto-diagnoser) -----------
+  if (cfg.toolCache) {
+    const hit = toolCache.get(cacheKey(ctx));
+    if (hit) {
+      tracer
+        ?.startSpan({
+          name: `tool:cache/${ctx.agent}`,
+          kind: "tool",
+          parentSpanId: ctx.parentSpanId ?? null,
+          attributes: { agent: ctx.agent, cache: "hit", tool: hit.tool, findings: hit.findings.length },
+        })
+        .end("ok");
+      ctx.trace({ node: `tool:cache/${ctx.agent}`, status: "ok", message: `Cache hit — 0 model calls for ${ctx.agent} lane` });
+      return hit;
+    }
+  }
+
+  const skipLive = cfg.circuitBreaker && cfg.skipLiveSweepFor.includes(ctx.agent);
+  if (skipLive) {
+    tracer
+      ?.startSpan({
+        name: `breaker:${ctx.agent}`,
+        kind: "decision",
+        parentSpanId: ctx.parentSpanId ?? null,
+        attributes: { agent: ctx.agent, reason: "circuit-breaker-open", skipped: "live-sweep" },
+      })
+      .end("warn");
+    ctx.trace({
+      node: `breaker:${ctx.agent}`,
+      status: "warn",
+      message: `Circuit breaker open for ${ctx.agent} — skipping the known-bad live sweep`,
+    });
+  }
+
   const chain: { name: string; run: () => Promise<ToolFinding[]> | ToolFinding[]; degraded: boolean }[] = [
-    { name: "live-sweep", run: () => liveSweep(ctx), degraded: false },
+    ...(skipLive ? [] : [{ name: "live-sweep", run: () => liveSweep(ctx), degraded: false }]),
     { name: "degraded-sweep", run: () => degradedSweep(ctx), degraded: true },
     { name: "archive-recall", run: () => archiveRecall(ctx), degraded: true },
   ];
@@ -129,6 +177,18 @@ export async function runRetrievalTool(ctx: ToolContext): Promise<ToolResult> {
       });
       continue;
     }
+    const span = tracer?.startSpan({
+      name: `tool:${step.name}/${ctx.agent}`,
+      kind: "tool",
+      parentSpanId: ctx.parentSpanId ?? null,
+      attributes: {
+        agent: ctx.agent,
+        tool: step.name,
+        objective: ctx.objective,
+        degraded_tool: step.degraded,
+        cache: cfg.toolCache ? "miss" : "off",
+      },
+    });
     try {
       const findings = await step.run();
       if (!findings.length) throw new Error("tool returned nothing usable");
@@ -140,10 +200,18 @@ export async function runRetrievalTool(ctx: ToolContext): Promise<ToolResult> {
           message: `Tool fallback engaged for ${ctx.agent} lane (${step.name})`,
         });
       }
-      return { findings, tool: step.name, degraded: step.degraded };
+      const result: ToolResult = { findings, tool: step.name, degraded: step.degraded };
+      if (cfg.toolCache) toolCache.set(cacheKey(ctx), result);
+      span?.end(step.degraded ? "warn" : "ok", {
+        findings: findings.length,
+        fallback: step.degraded,
+        avg_confidence: Number((findings.reduce((a, f) => a + f.confidence, 0) / findings.length).toFixed(2)),
+      });
+      return result;
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
       ctx.budget.failures++;
+      span?.fail(e, { parse_failed: lastErr.includes("nothing usable") });
       ctx.trace({
         node: `tool:${step.name}`,
         status: "error",
