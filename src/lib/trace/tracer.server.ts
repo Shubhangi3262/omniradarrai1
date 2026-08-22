@@ -1,5 +1,5 @@
 import { estimateCost } from "./cost";
-import type { SpanEvent, SpanKind, SpanRecord, SpanStatus } from "./types";
+import type { JsonValue, SpanEvent, SpanKind, SpanRecord, SpanStatus } from "./types";
 
 const hex = (bytes: number) => {
   let s = "";
@@ -11,7 +11,7 @@ export type StartSpanInput = {
   name: string;
   kind: SpanKind;
   parentSpanId?: string | null;
-  attributes?: Record<string, unknown>;
+  attributes?: Record<string, JsonValue>;
 };
 
 export class Span {
@@ -25,10 +25,10 @@ export class Span {
     readonly name: string,
     readonly kind: SpanKind,
     readonly parent_span_id: string | null,
-    readonly attributes: Record<string, unknown>,
+    readonly attributes: Record<string, JsonValue>,
   ) {}
 
-  set(attrs: Record<string, unknown>) {
+  set(attrs: Record<string, JsonValue>) {
     Object.assign(this.attributes, attrs);
     return this;
   }
@@ -46,7 +46,7 @@ export class Span {
     return this;
   }
 
-  end(status: SpanStatus = "ok", attrs?: Record<string, unknown>) {
+  end(status: SpanStatus = "ok", attrs?: Record<string, JsonValue>) {
     if (this.ended) return this;
     this.ended = true;
     if (attrs) Object.assign(this.attributes, attrs);
@@ -54,7 +54,7 @@ export class Span {
     return this;
   }
 
-  fail(error: unknown, attrs?: Record<string, unknown>) {
+  fail(error: unknown, attrs?: Record<string, JsonValue>) {
     if (this.ended) return this;
     this.ended = true;
     if (attrs) Object.assign(this.attributes, attrs);

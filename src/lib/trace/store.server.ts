@@ -19,7 +19,7 @@ type PersistInput = {
   status: string;
   task_score: number;
   confidence: number;
-  summary: Record<string, unknown>;
+  summary: Record<string, import("./types").JsonValue>;
 };
 
 /** Flush the in-memory span buffer to Lovable Cloud. Never throws into the run. */

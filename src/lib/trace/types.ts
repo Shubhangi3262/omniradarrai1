@@ -7,6 +7,8 @@
  * retries, fallbacks and errors.
  */
 
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
+
 export type SpanKind = "graph" | "agent" | "llm" | "tool" | "decision" | "chain" | "memory";
 
 export type SpanStatus = "ok" | "warn" | "error";
@@ -29,7 +31,7 @@ export type SpanRecord = {
   prompt_tokens: number;
   completion_tokens: number;
   cost_usd: number;
-  attributes: Record<string, unknown>;
+  attributes: Record<string, JsonValue>;
   events: SpanEvent[];
   error: string | null;
 };
@@ -60,7 +62,7 @@ export type TraceRecord = TraceMetrics & {
   chaos: ChaosSettings;
   optimizations: OptimizationConfig;
   diagnosis: Diagnosis | null;
-  summary: Record<string, unknown>;
+  summary: Record<string, JsonValue>;
   created_at: string;
 };
 
