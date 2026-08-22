@@ -57,6 +57,7 @@ export type LaneReport = {
 };
 
 export type AgentRunResult = {
+  traceId: string;
   briefing: IntelBriefing;
   plan: PlanTask[];
   trace: TraceEvent[];
