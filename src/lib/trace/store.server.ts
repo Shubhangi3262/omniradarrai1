@@ -28,7 +28,7 @@ export async function persistTrace(input: PersistInput): Promise<void> {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const m = input.tracer.metrics();
 
-    const { error: traceErr } = await supabaseAdmin.from("agent_traces").insert({
+    const tracePayload = {
       trace_id: input.tracer.trace_id,
       experiment_id: input.experimentId,
       variant: input.variant,
@@ -43,7 +43,8 @@ export async function persistTrace(input: PersistInput): Promise<void> {
       optimizations: input.optimizations,
       summary: input.summary,
       ...m,
-    });
+    };
+    const { error: traceErr } = await supabaseAdmin.from("agent_traces").insert(tracePayload as never);
     if (traceErr) {
       console.error("trace insert failed", traceErr);
       return;
@@ -67,7 +68,7 @@ export async function persistTrace(input: PersistInput): Promise<void> {
       error: s.error,
     }));
     for (let i = 0; i < rows.length; i += 200) {
-      const { error } = await supabaseAdmin.from("agent_spans").insert(rows.slice(i, i + 200));
+      const { error } = await supabaseAdmin.from("agent_spans").insert(rows.slice(i, i + 200) as never);
       if (error) console.error("span insert failed", error);
     }
   } catch (e) {
@@ -79,7 +80,7 @@ export async function updateDiagnosis(traceId: string, diagnosis: Diagnosis): Pr
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const { error } = await supabaseAdmin
     .from("agent_traces")
-    .update({ diagnosis: diagnosis as unknown as Record<string, unknown> })
+    .update({ diagnosis } as never)
     .eq("trace_id", traceId);
   if (error) throw new Error(error.message);
 }
