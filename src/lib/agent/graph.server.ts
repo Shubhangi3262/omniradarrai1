@@ -1,5 +1,7 @@
 import { Annotation, END, MemorySaver, Send, START, StateGraph } from "@langchain/langgraph";
 
+import { RunTracer } from "../trace/tracer.server";
+import { DEFAULT_OPTIMIZATIONS, type OptimizationConfig, type SpanKind } from "../trace/types";
 import { Budget, BudgetExhausted, callModel, parseJson } from "./llm.server";
 import { runRetrievalTool } from "./tools.server";
 import type {
@@ -58,23 +60,55 @@ export type RunInput = {
   memoryDigest: string;
   chaos: ChaosConfig;
   threadId?: string;
+  optimizations?: OptimizationConfig;
+  tracer?: RunTracer;
 };
 
 /** Checkpointing: state is persisted per thread, so a crashed run can be resumed. */
 const checkpointer = new MemorySaver();
 
 export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
-  const budget = new Budget(Math.max(4, input.chaos.budgetLimit));
+  const cfg: OptimizationConfig = { ...DEFAULT_OPTIMIZATIONS, ...(input.optimizations ?? {}) };
+  const budget = new Budget(Math.max(4, cfg.budgetLimit || input.chaos.budgetLimit));
+  const tracer = input.tracer ?? new RunTracer();
+  budget.tracer = tracer;
+  budget.opt = cfg;
+  const rootSpan = tracer.startSpan({
+    name: "agent-run",
+    kind: "graph",
+    attributes: { topic: input.topic, chaos: input.chaos, optimizations: cfg },
+  });
+  const rootId = rootSpan.span_id;
   const trace: TraceEvent[] = [];
   const log = (e: Omit<TraceEvent, "t">) => {
     trace.push({ ...e, t: Date.now() });
   };
   const chaosFailureRate = input.chaos.toolFailureRate;
 
+  /** Wraps a graph node so every execution becomes a span with its own children. */
+  const traced =
+    (name: string, kind: SpanKind, fn: (s: State, parent: string | null) => Promise<Partial<State>>) =>
+    async (s: State): Promise<Partial<State>> => {
+      const span = tracer.startSpan({
+        name,
+        kind,
+        parentSpanId: rootId,
+        attributes: { node: name, replans: s.replans, budget_remaining: budget.remaining },
+      });
+      try {
+        const out = await fn(s, span.span_id);
+        span.end("ok", { budget_after: budget.remaining });
+        return out;
+      } catch (e) {
+        span.fail(e, { budget_after: budget.remaining });
+        throw e;
+      }
+    };
+
   /* ---------------- nodes ---------------- */
 
   // 1. Dynamic planner — adaptive task decomposition, replans from critic feedback.
-  const planner = async (s: State): Promise<Partial<State>> => {
+  const planner = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     const replanning = s.replans > 0;
     log({
       node: "planner",
@@ -85,13 +119,14 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
     });
 
     // resource-aware decomposition: fewer lanes when the budget is strained
-    const wanted = budget.strained ? 2 : budget.remaining < 8 ? 3 : 5;
+    const wanted = Math.min(cfg.maxLanes, budget.strained ? 2 : budget.remaining < 8 ? 3 : 5);
     let plan: PlanTask[] = [];
     try {
       const raw = await callModel({
         node: "planner",
         budget,
         trace: log,
+        parentSpanId: parent,
         chaosFailureRate,
         json: true,
         system:
@@ -142,7 +177,7 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
   const dispatch = (s: State) => s.plan.map((task) => new Send("specialist", { ...s, currentTask: task }));
 
   // 3. Specialist agent — parallel lane backed by the tool registry with fallbacks.
-  const specialist = async (s: State): Promise<Partial<State>> => {
+  const specialist = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     const task = s.currentTask!;
     const node = `agent:${task.agent}`;
     try {
@@ -154,6 +189,7 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         memoryDigest: s.memoryDigest,
         budget,
         trace: log,
+        parentSpanId: parent,
         chaosFailureRate,
       });
       const evidence: Evidence[] = result.findings.map((f) => ({
@@ -209,7 +245,7 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
   };
 
   // 4. Conflicting-evidence resolution + uncertainty-aware adjudication.
-  const reconcile = async (s: State): Promise<Partial<State>> => {
+  const reconcile = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     let evidence = s.evidence;
     if (input.chaos.injectConflicts) {
       const target = evidence.find((e) => !e.degraded);
@@ -238,6 +274,8 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         node: "reconcile",
         budget,
         trace: log,
+        parentSpanId: parent,
+        parentSpanId: parent,
         json: true,
         system:
           'You are the ADJUDICATOR. Find claims where the evidence conflicts, weigh them by plausibility and stated confidence, and resolve each. Return JSON {"conflicts":[{"claim":string,"sides":[string],"resolution":string,"confidence":number}]}. If nothing conflicts return an empty array. Never resolve by averaging: pick the better-supported side and say why.',
@@ -260,11 +298,15 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
   };
 
   // 5. Hypothesis verification — state a falsifiable claim per lane and test it.
-  const verify = async (s: State): Promise<Partial<State>> => {
+  const verify = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     const solid = s.evidence.filter((e) => !e.degraded);
     if (!solid.length) {
       log({ node: "verifier", status: "warn", message: "No verifiable evidence — skipping hypothesis testing" });
       return { hypotheses: [] };
+    }
+    if (cfg.fastPathVerifier) {
+      log({ node: "verifier", status: "info", message: "Fast-path verifier (auto-tuned): deterministic hypothesis check" });
+      return { hypotheses: heuristicHypotheses(solid, s.conflicts) };
     }
     if (budget.remaining <= 2) {
       log({ node: "verifier", status: "warn", message: "Budget-constrained — heuristic hypothesis check" });
@@ -275,6 +317,8 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         node: "verifier",
         budget,
         trace: log,
+        parentSpanId: parent,
+        parentSpanId: parent,
         json: true,
         system:
           'You are the VERIFIER. From the evidence, state 2-3 falsifiable hypotheses about where this domain is heading, then test each ONLY against the supplied evidence. Return JSON {"hypotheses":[{"statement":string,"verdict":"supported|refuted|unverified","reasoning":string,"confidence":number}]}. Mark "unverified" whenever the evidence is thin, degraded or disputed — do not reward guessing.',
@@ -305,7 +349,7 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
   };
 
   // 6. Self-evaluation.
-  const critic = async (s: State): Promise<Partial<State>> => {
+  const critic = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     const solid = s.evidence.filter((e) => !e.degraded);
     const failedLanes = [...new Set(s.evidence.filter((e) => e.degraded).map((e) => e.agent))];
     const gapsFromFailures = failedLanes.map((a) => `${a} lane unresolved (tool degraded)`);
@@ -364,20 +408,35 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
 
   // 7. Autonomous replan decision with loop / deadlock detection.
   const route = (s: State): "planner" | "synthesize" => {
+    const decision = tracer.startSpan({
+      name: "decision:route",
+      kind: "decision",
+      parentSpanId: rootId,
+      attributes: {
+        confidence: s.critique.confidence,
+        gaps: s.critique.gaps,
+        replans: s.replans,
+        budget_remaining: budget.remaining,
+      },
+    });
+    const decide = (next: "planner" | "synthesize", reason: string) => {
+      decision.end(next === "planner" ? "warn" : "ok", { chosen: next, reason });
+      return next;
+    };
     const needsMore = s.critique.confidence < 0.62 || s.critique.gaps.length > 0;
-    if (!needsMore) return "synthesize";
+    if (!needsMore) return decide("synthesize", "objective met");
     if (s.replans >= 2) {
       log({ node: "router", status: "warn", message: "Replan cap reached — proceeding with caveats" });
-      return "synthesize";
+      return decide("synthesize", "replan cap reached");
     }
     if (budget.remaining <= 3) {
       log({ node: "router", status: "warn", message: "Insufficient budget to replan — proceeding with caveats" });
-      return "synthesize";
+      return decide("synthesize", "insufficient budget");
     }
     const sig = planSignature(s.plan);
     if (s.signatures.filter((x) => x === sig).length > 1) {
       log({ node: "router", status: "error", message: "Loop detected: identical plan repeated — breaking cycle" });
-      return "synthesize";
+      return decide("synthesize", "loop detected");
     }
     // deadlock detection: two consecutive rounds with no measurable progress
     const p = s.progress;
@@ -387,16 +446,16 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         status: "error",
         message: "Deadlock detected: replanning is no longer improving the answer — breaking out",
       });
-      return "synthesize";
+      return decide("synthesize", "deadlock detected");
     }
     log({ node: "router", status: "info", message: "Objective not met — autonomous replan" });
-    return "planner";
+    return decide("planner", "gaps remain");
   };
 
   const bumpReplan = async (s: State): Promise<Partial<State>> => ({ replans: s.replans + 1 });
 
   // 8. Synthesis into the decision-ready briefing.
-  const synthesize = async (s: State): Promise<Partial<State>> => {
+  const synthesize = async (s: State, parent: string | null = null): Promise<Partial<State>> => {
     const fallback = heuristicBriefing(s);
     if (budget.remaining <= 0) {
       log({ node: "synthesize", status: "warn", message: "Budget exhausted — deterministic synthesis" });
@@ -407,6 +466,8 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
         node: "synthesize",
         budget,
         trace: log,
+        parentSpanId: parent,
+        parentSpanId: parent,
         json: true,
         system:
           'You are the SYNTHESISER. Turn adjudicated evidence into one decision-ready briefing. Flag disputed and low-confidence items honestly; state uncertainty in the summary rather than hiding it. Return ONLY JSON {"headline":string,"summary":string,"continuity":string,"signals":[{"category":"research|patent|news|competitor|social","title":string,"insight":string,"impact":"high|medium|low","source_hint":string,"is_new":boolean,"confidence":number,"disputed":boolean}],"competitor_moves":[{"name":string,"move":string,"implication":string}],"opportunities":[string],"risks":[string],"recommended_actions":[string]}. 3-5 competitor moves, 3-4 items per list.',
@@ -439,13 +500,13 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
   /* ---------------- graph ---------------- */
 
   const graph = new StateGraph(StateAnn)
-    .addNode("planner", planner)
-    .addNode("specialist", specialist)
-    .addNode("reconcile", reconcile)
-    .addNode("verify", verify)
-    .addNode("critic", critic)
+    .addNode("planner", traced("planner", "agent", planner))
+    .addNode("specialist", traced("specialist", "agent", specialist))
+    .addNode("reconcile", traced("reconcile", "chain", reconcile))
+    .addNode("verify", traced("verify", "chain", verify))
+    .addNode("critic", traced("critic", "chain", critic))
     .addNode("bumpReplan", bumpReplan)
-    .addNode("synthesize", synthesize)
+    .addNode("synthesize", traced("synthesize", "chain", synthesize))
     .addEdge(START, "planner")
     .addConditionalEdges("planner", dispatch, ["specialist"])
     .addEdge("specialist", "reconcile")
@@ -479,7 +540,15 @@ export async function runIntelGraph(input: RunInput): Promise<AgentRunResult> {
     final = { ...partial, briefing: heuristicBriefing(partial) };
   }
 
+  rootSpan.end("ok", {
+    replans: final.critique?.replans ?? 0,
+    lanes: final.lanes?.length ?? 0,
+    evidence: final.evidence?.length ?? 0,
+    confidence: final.critique?.confidence ?? 0,
+  });
+
   return {
+    traceId: tracer.trace_id,
     briefing: final.briefing ?? heuristicBriefing(final),
     plan: final.plan,
     trace,
