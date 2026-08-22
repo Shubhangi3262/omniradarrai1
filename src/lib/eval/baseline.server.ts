@@ -30,6 +30,7 @@ export async function runBaseline(topic: string, competitors: string): Promise<A
     risks: parsed?.risks ?? [],
     recommended_actions: parsed?.recommended_actions ?? [],
   };
+  traceId: "baseline",
   return {
     briefing,
     plan: [],
