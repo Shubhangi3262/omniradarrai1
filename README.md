@@ -40,11 +40,11 @@ Implement end-to-end tracing of agents, prompts, decisions, tool calls, latency,
 *LangSmith, Langfuse, OpenTelemetry, or equivalent may be used.*
 now i want to make it more advanced so do changes accordingly as i told you above all parameters should coverd  i want every single parameter from above and make it effective without any error
 
-This project was built with [Lovable](https://lovable.dev).
+This project was built with [Signal scope](https://lovable.dev).
 
 **Live app**: https://omniradarrai1.lovable.app
 
-## Build with Lovable
+## Build with Signal scope 
 
 Continue developing this project in the [Lovable editor](https://lovable.dev/projects/a67690c5-2510-4406-b551-c7984c27f6a0).
 
