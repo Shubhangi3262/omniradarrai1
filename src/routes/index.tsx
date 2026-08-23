@@ -141,6 +141,13 @@ function Index() {
             <FlaskConical className="size-3.5" />
             Evaluation harness
           </Link>
+          <Link
+            to="/observability"
+            className="ml-3 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs text-primary transition-colors hover:bg-primary/20"
+          >
+            <FlaskConical className="size-3.5" />
+            Tracing &amp; observability
+          </Link>
           <h1 className="mt-5 text-4xl font-semibold tracking-tight sm:text-5xl">
             <span className="text-gradient-intel">SignalScope</span> plans, argues with
             itself, and recovers when its tools break.
